@@ -29,6 +29,7 @@
 #include <openssl/err.h>
 #include <openssl/bn.h>
 #include <openssl/rsa.h>
+#include <openssl/rand.h>
 
 /* Project Include Files */
 #include "cse543-util.h"
@@ -202,7 +203,7 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 	int err_generate_pseudorandom_bytes = 0;
 	err_generate_pseudorandom_bytes = generate_pseudorandom_bytes(iv, iv_len);
 	if(err_generate_pseudorandom_bytes != 0) { 
-		fprintf(stderr, "encrypt_message: generate_pseudorandom_bytes() failed to generate IV. \n")
+		fprintf(stderr, "encrypt_message: generate_pseudorandom_bytes() failed to generate IV. \n");
 		free(iv);
         free(tag);
         free(ciphertext);
@@ -210,9 +211,9 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 	}
 	
 	// Encryption
-	ciphertext_len = encrypt(plaintext, plaintext_len, (unsigned char *)NULL, 0, key, iv, ciphertext, tag)
+	ciphertext_len = encrypt(plaintext, plaintext_len, (unsigned char *)NULL, 0, key, iv, ciphertext, tag);
 	if(ciphertext_len < 0) {
-		fprintf(stderr, "encrypt_message: encrypt() failed. \n")
+		fprintf(stderr, "encrypt_message: encrypt() failed. \n");
 		free(iv);
 		free(tag);
 		free(ciphertext);
@@ -231,8 +232,6 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 	free(ciphertext);
 
 	return 0;
-
-
 }
 
 
@@ -262,8 +261,34 @@ int decrypt_message( unsigned char *buffer, unsigned int len, unsigned char *key
 	* Take inspiration from Test AES function - We are trying to employ Symmetric Key Cryptography here
 	*/
 
+	int iv_len = 16;
+	int tag_len = TAGSIZE;
+
+	if (len < iv_len + tag_len) {
+        fprintf(stderr, "decrypt_message: Invalid Buffer.\n");
+        return -1;
+    }
+
+	int ciphertext_len = len - tag_len - iv_len;
+
+	// The buffer is designed as IV + Tag + CipherText. 
+	// We will need to seperate the ciphertext from tag and IV
+	// I have taken pointers here to track the ciphertext
+	unsigned char* iv = buffer;
+	unsigned char* tag = buffer + iv_len;
+	unsigned char* ciphertext = buffer + iv_len + tag_len;
 
 
+	int decrypt_status = -1;
+	decrypt_status = decrypt( ciphertext, ciphertext_len, (unsigned char *) NULL, 0, tag, key, iv, plaintext );	
+	if(decrypt_status < 0) {
+		fprintf(stderr, "decrypt_message: decrypt() failed. Invalid key/tag. \n");
+		return -1;
+	}
+
+	*plaintext_len = (unsigned int)decrypt_status;
+
+	return 0;
 }
 
 
@@ -328,6 +353,18 @@ int extract_public_key( char *buffer, unsigned int size, EVP_PKEY **pubkey )
 
 int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
 {
+	if(buffer == NULL || size == 0) {
+		fprintf(stderr, "generate_pseudorandom_bytes: Invalid input.\n");
+		return -1;
+	}
+
+	int rand_bytes_status = 1;
+	rand_bytes_status = RAND_bytes(buffer, size);
+
+	if(rand_bytes_status != 1) {
+		fprintf(stderr, "generate_pseudorandom_bytes: Error in RAND_bytes.\n");
+		return -1;
+	}
 	return 0;
 }
 
