@@ -397,8 +397,34 @@ int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubke
 	* Take inspiration from Test RSA function - We are trying to employ Asymmetric Key Cryptography here
 	*/
 
+	unsigned int ciphertext_len = 0;
+	unsigned char *ciphertext;
+	unsigned char *ek;
+	unsigned int ekl; 
+	unsigned char *iv;
+	unsigned int ivl;
+	unsigned int buffer_len = 0;
 
+	ciphertext_len = rsa_encrypt( key, keylen, &ciphertext, &ek, &ekl, &iv, &ivl, pubkey );
+	if(ciphertext_len < 0) {
+		fprintf(stderr, "seal_symmetric_key: rsa_encrypt failed.\n");
+		return -1;
+	}
 
+	memcpy(buffer, &ekl, sizeof(ekl));
+	memcpy(buffer + sizeof(ekl), &ivl, sizeof(ivl));
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl), &ciphertext_len, sizeof(ciphertext_len));
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len), ek, ekl);
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl, iv, ivl);
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl, ciphertext, ciphertext_len);
+
+	free(ek);
+	free(iv);
+	free(ciphertext);
+
+	buffer_len = sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl + ciphertext_len;
+
+	return buffer_len;
 }
 
 /**********************************************************************
@@ -428,8 +454,36 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
 	* Take inspiration from Test RSA function - We are trying to employ Asymmetric Key Cryptography here
 	*/
 
+	unsigned int ekl, ivl, ciphertext_len;
 
+	unsigned int header_len = sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
+    if (len < header_len) {
+        fprintf(stderr, "unseal_symmetric_key: Buffer is too small to be valid.\n");
+        return -1;
+    }
 
+	memcpy(&ekl, buffer, sizeof(ekl));
+	memcpy(&ivl, buffer + sizeof(ekl), sizeof(ivl));
+	memcpy(&ciphertext_len, buffer + sizeof(ekl) + sizeof(ivl), sizeof(ciphertext_len));
+
+	if (header_len + ekl + ivl + ciphertext_len != len) {
+        fprintf(stderr, "unseal_symmetric_key: Buffer corruption or invalid length fields.\n");
+        return -1;
+    }
+
+	unsigned char* ek = buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
+	unsigned char* iv = buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl;
+	unsigned char* ciphertext = buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl;
+
+	int asymm_decryption_status = 0;
+
+ 	asymm_decryption_status = rsa_decrypt(ciphertext, ciphertext_len, ek, ekl, iv, ivl, key, privkey);
+    if (asymm_decryption_status < 0) {
+        fprintf(stderr, "unseal_symmetric_key: rsa_decrypt failed.\n");
+        return -1;
+    }
+
+	return 0;
 }
 
 
