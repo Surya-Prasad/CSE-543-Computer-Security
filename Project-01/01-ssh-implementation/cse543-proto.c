@@ -711,14 +711,38 @@ int client_secure_transfer( struct rm_cmd *r, char *fname, char *address )
 	*/
 
 	/* Connect to the server using the provided address */
+	int sock;
+	unsigned char* session_key = NULL;
+	sock = client_connect(address);
+    if (sock < 0) {
+        errorMessage("client_secure_transfer: Connection to server failed.\n");
+        return -1;
+    }
 
     /* Perform client authentication and establish a session key */
+	int client_authenticate_status = 0;
+	client_authenticate_status = client_authenticate(sock, &session_key);
+	if(client_authenticate_status != 0) {
+		errorMessage("client_secure_transfer: Client authentication failed.\n");
+		close(sock);
+		return -1;
+	}
 
     /* Transfer the file securely using the established symmetric key */
+	int transfer_file_status = 0;
+	transfer_file_status = transfer_file(r, fname, sock, session_key);
+	if(transfer_file_status != 0) {
+		errorMessage("client_secure_transfer: File transfer failed.\n");
+		close(sock);
+		return -1;
+	}
 
     /* Close the connection */
+	close(sock);
+	free(session_key);
 
     /* Return status (0 on success, -1 on failure) */
+	return 0;
 }
 
 /* 
