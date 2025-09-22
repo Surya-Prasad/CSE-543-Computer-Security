@@ -194,16 +194,17 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 	unsigned char* tag = malloc(tag_len);
 	unsigned char* ciphertext = malloc(ciphertext_len);
 	if (!iv || !tag || !ciphertext) {
-		fprintf(stderr, "encrypt_message: Malloc Failure. \n");
+		errorMessage("encrypt_message: Malloc Failure. \n");
 		free(iv);
 		free(tag);
         free(ciphertext);
 		return -1;
 	}
+
 	int err_generate_pseudorandom_bytes = 0;
 	err_generate_pseudorandom_bytes = generate_pseudorandom_bytes(iv, iv_len);
 	if(err_generate_pseudorandom_bytes != 0) { 
-		fprintf(stderr, "encrypt_message: generate_pseudorandom_bytes() failed to generate IV. \n");
+		errorMessage("encrypt_message: generate_pseudorandom_bytes() failed to generate IV. \n");
 		free(iv);
         free(tag);
         free(ciphertext);
@@ -213,7 +214,7 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 	// Encryption
 	ciphertext_len = encrypt(plaintext, plaintext_len, (unsigned char *)NULL, 0, key, iv, ciphertext, tag);
 	if(ciphertext_len < 0) {
-		fprintf(stderr, "encrypt_message: encrypt() failed. \n");
+		errorMessage("encrypt_message: encrypt() failed. \n");
 		free(iv);
 		free(tag);
 		free(ciphertext);
@@ -265,7 +266,7 @@ int decrypt_message( unsigned char *buffer, unsigned int len, unsigned char *key
 	int tag_len = TAGSIZE;
 
 	if (len < iv_len + tag_len) {
-        fprintf(stderr, "decrypt_message: Invalid Buffer.\n");
+        errorMessage("decrypt_message: Invalid Buffer.\n");
         return -1;
     }
 
@@ -282,7 +283,7 @@ int decrypt_message( unsigned char *buffer, unsigned int len, unsigned char *key
 	int decrypt_status = -1;
 	decrypt_status = decrypt( ciphertext, ciphertext_len, (unsigned char *) NULL, 0, tag, key, iv, plaintext );	
 	if(decrypt_status < 0) {
-		fprintf(stderr, "decrypt_message: decrypt() failed. Invalid key/tag. \n");
+		errorMessage("decrypt_message: decrypt() failed. Invalid key/tag. \n");
 		return -1;
 	}
 
@@ -354,7 +355,7 @@ int extract_public_key( char *buffer, unsigned int size, EVP_PKEY **pubkey )
 int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
 {
 	if(buffer == NULL || size == 0) {
-		fprintf(stderr, "generate_pseudorandom_bytes: Invalid input.\n");
+		errorMessage("generate_pseudorandom_bytes: Invalid input.\n");
 		return -1;
 	}
 
@@ -362,7 +363,7 @@ int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
 	rand_bytes_status = RAND_bytes(buffer, size);
 
 	if(rand_bytes_status != 1) {
-		fprintf(stderr, "generate_pseudorandom_bytes: Error in RAND_bytes.\n");
+		errorMessage("generate_pseudorandom_bytes: Error in RAND_bytes.\n");
 		return -1;
 	}
 	return 0;
@@ -397,7 +398,7 @@ int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubke
 	* Take inspiration from Test RSA function - We are trying to employ Asymmetric Key Cryptography here
 	*/
 
-	unsigned int ciphertext_len = 0;
+	int ciphertext_len = 0;
 	unsigned char *ciphertext;
 	unsigned char *ek;
 	unsigned int ekl; 
@@ -407,7 +408,7 @@ int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubke
 
 	ciphertext_len = rsa_encrypt( key, keylen, &ciphertext, &ek, &ekl, &iv, &ivl, pubkey );
 	if(ciphertext_len < 0) {
-		fprintf(stderr, "seal_symmetric_key: rsa_encrypt failed.\n");
+		errorMessage("seal_symmetric_key: rsa_encrypt failed.\n");
 		return -1;
 	}
 
@@ -458,7 +459,7 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
 
 	unsigned int header_len = sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
     if (len < header_len) {
-        fprintf(stderr, "unseal_symmetric_key: Buffer is too small to be valid.\n");
+        errorMessage("unseal_symmetric_key: Buffer is too small to be valid.\n");
         return -1;
     }
 
@@ -467,7 +468,7 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
 	memcpy(&ciphertext_len, buffer + sizeof(ekl) + sizeof(ivl), sizeof(ciphertext_len));
 
 	if (header_len + ekl + ivl + ciphertext_len != len) {
-        fprintf(stderr, "unseal_symmetric_key: Buffer corruption or invalid length fields.\n");
+        errorMessage("unseal_symmetric_key: Buffer corruption or invalid length fields.\n");
         return -1;
     }
 
@@ -479,7 +480,7 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
 
  	asymm_decryption_status = rsa_decrypt(ciphertext, ciphertext_len, ek, ekl, iv, ivl, key, privkey);
     if (asymm_decryption_status < 0) {
-        fprintf(stderr, "unseal_symmetric_key: rsa_decrypt failed.\n");
+        errorMessage("unseal_symmetric_key: rsa_decrypt failed.\n");
         return -1;
     }
 
@@ -511,15 +512,81 @@ int client_authenticate( int sock, unsigned char **session_key )
 	* Send Message to server with header CLIENT_INIT_EXCHANGE
 	*/
 
+	ProtoMessageHdr header;
+	header.msgtype = CLIENT_INIT_EXCHANGE;
+	header.length = 0;
+
+	int client_send_status = 0;
+	client_send_status = send_message(sock, &header, NULL);
+	if(client_send_status != 0) {
+		errorMessage("client_authenticate: Client message send failed for CLIENT_INIT_EXCHANGE.\n");
+		return -1;
+	}
+
 	/*
 	* Wait for Message from server with header SERVER_INIT_RESPONSE
 	* Extract Pub Key out of the message -> Create a new Symmetric Key -> Encrypt it using the Pub Key of server
 	*/
 
+	char server_message_buffer[MAX_BLOCK_SIZE];
+	int server_wait_msg_status = 0;
+	server_wait_msg_status = wait_message(sock, &header, server_message_buffer, SERVER_INIT_RESPONSE);
+	if(server_wait_msg_status < 0) {
+		errorMessage("client_authenticate: Server message wait failed for SERVER_INIT_RESPONSE.\n");
+		return -1;
+	}
+
+	unsigned char *key_to_seal = NULL;
+	key_to_seal = (unsigned char *) malloc (KEYSIZE);
+	if(key_to_seal == NULL) {
+		errorMessage("client_authenticate: Malloc failure for symmetric key");
+		free(key_to_seal);
+		return -1;
+	}
+
+	int generate_session_key_status = 0;
+	generate_session_key_status = generate_pseudorandom_bytes(key_to_seal, KEYSIZE);
+	if (generate_session_key_status != 0) {
+        errorMessage("client_authenticate: Failed to generate session key\n");
+		free(key_to_seal);
+		return -1;
+    }
+
+	EVP_PKEY *server_pubkey = EVP_PKEY_new();
+	int extract_public_key_status = 0;
+	extract_public_key_status = extract_public_key(server_message_buffer, header.length, &server_pubkey);
+	if(extract_public_key_status != 0) {
+		errorMessage("client_authenticate: Failed to extract server public key\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+	}
+
+	char encrypted_key_body[MAX_BLOCK_SIZE];
+	int encrypted_key_body_len = 0;
+	encrypted_key_body_len = seal_symmetric_key(key_to_seal, KEYSIZE, server_pubkey, encrypted_key_body);
+    if (encrypted_key_body_len < 0) {
+        errorMessage("client_authenticate: Failed to seal symmetric key\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+    }
+
 	/*
 	* Send message to server with header CLIENT_INIT_ACK
 	* The encrypted symmetric key from previous phase should be sent here
 	*/
+
+	header.msgtype = CLIENT_INIT_ACK;
+	header.length = encrypted_key_body_len;
+	int client_ack_send_status = 0;
+	client_ack_send_status = send_message(sock, &header, encrypted_key_body);
+	if(client_ack_send_status != 0) {
+		errorMessage("client_authenticate: Client message send failed for CLIENT_INIT_ACK\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+	}
 
 	/*
 	* Wait message from server with header SERVER_INIT_ACK
@@ -527,9 +594,21 @@ int client_authenticate( int sock, unsigned char **session_key )
 	* This would mean both Client and Server have the same symmetric key now and the SSH connection is successful
 	*/
 
+	int server_ack_status = 0;
+	server_ack_status = wait_message(sock, &header, NULL, SERVER_INIT_ACK);
+	if(server_ack_status < 0) {
+		errorMessage("client_authenticate: Server response invalid for SERVER_INIT_ACK.\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+	}
+
 	/*
 	* Store the Symmetric key in session_key for later use. 
 	*/
+
+	*session_key = key_to_seal;
+	return 0;
 }
 
 /**********************************************************************
@@ -757,8 +836,80 @@ int test_aes( )
 int server_protocol( int sock, char *pubfile, EVP_PKEY *privkey, unsigned char **enckey )
 {
 	/*
-	* Couterparts of client actions that the server needs to take.
+	* Counterparts of client actions that the server needs to take.
 	*/
+
+	// Server waiting for Client Init
+	char client_message_buffer[MAX_BLOCK_SIZE];
+	ProtoMessageHdr header;
+	int client_wait_status = 0;
+	client_wait_status = wait_message(sock, &header, client_message_buffer, CLIENT_INIT_EXCHANGE);
+	if(client_wait_status < 0) {
+		errorMessage("client_authenticate: Client message wait failed for CLIENT_INIT_EXCHANGE.\n");
+		return -1;
+	}
+
+	// Copying Server's Public key to the buffer
+	// I have referred to extract_public_key for this
+	FILE *fptr;
+	fptr = fopen(pubfile, "r");
+	if(fptr == NULL) {
+		errorMessage("server_protocol: Cannot open public key.\n");
+		return -1;
+	}
+	fseek(fptr, 0, SEEK_END);
+	long long int pubkey_len;
+    pubkey_len = ftell(fptr);
+    rewind(fptr);
+    if (pubkey_len >= MAX_BLOCK_SIZE) {
+        errorMessage("server_protocol: Public key is too large.\n");
+        fclose(fptr);
+        return -1;
+    }
+    fread(client_message_buffer, pubkey_len, 1, fptr);
+    fclose(fptr);
+
+	// Sending Server Public key
+	header.msgtype = SERVER_INIT_RESPONSE;
+	header.length = pubkey_len;
+	int server_send_init_status = 0;
+	server_send_init_status = send_message(sock, &header, client_message_buffer);
+	if(server_send_init_status < 0) {
+		errorMessage("server_protocol: Server message send failed for SERVER_INIT_RESPONSE.\n");
+		return -1;
+	}
+
+	// Waiting for Client's Session Key
+	int server_wait_sessionkey_status = 0;
+	server_wait_sessionkey_status = wait_message(sock, &header, client_message_buffer, CLIENT_INIT_ACK);
+	if(server_wait_sessionkey_status < 0) {
+		errorMessage("server_protocol: Client message wait failed for CLIENT_INIT_ACK.\n");
+		return -1;
+	}
+
+	// Decrypting Client's key
+	int session_key_decrypt_status = 0;
+	session_key_decrypt_status = unseal_symmetric_key(client_message_buffer, header.length, privkey, enckey);
+	if (session_key_decrypt_status != 0) {
+        errorMessage("server_protocol: Session Key decryption failed.\n");
+        return -1;
+    }
+
+	// Send ACK to client
+	header.msgtype = SERVER_INIT_ACK;
+	header.length = 0;
+	int server_send_ack_status = 0;
+	server_send_ack_status = send_message(sock, &header, NULL);
+	if(server_send_ack_status != 0) {
+		errorMessage("server_protocol: Server message send failed for SERVER_INIT_ACK.\n");
+		if (*enckey != NULL) {
+            free(*enckey);
+            *enckey = NULL;
+        }
+		return -1;
+	}
+
+	return 0;
 }
 
 
@@ -890,14 +1041,14 @@ int server_secure_transfer( char *privfile, char *pubfile )
 	assert( fptr != NULL);
 	if (!(pRSA = PEM_read_RSAPrivateKey( fptr, &rsa_privkey, NULL, NULL)))
 	{
-		fprintf(stderr, "Error loading RSA Private Key File.\n");
+		errorMessage("Error loading RSA Private Key File.\n");
 
 		return 2;
 	}
 
 	if (!EVP_PKEY_assign_RSA(privkey, rsa_privkey))
 	{
-		fprintf(stderr, "EVP_PKEY_assign_RSA: failed.\n");
+		errorMessage("EVP_PKEY_assign_RSA: failed.\n");
 		return 3;
 	}
 	fclose( fptr ); 
@@ -907,13 +1058,13 @@ int server_secure_transfer( char *privfile, char *pubfile )
 	assert( fptr != NULL);
 	if (!PEM_read_RSAPublicKey( fptr , &rsa_pubkey, NULL, NULL))
 	{
-		fprintf(stderr, "Error loading RSA Public Key File.\n");
+		errorMessage("Error loading RSA Public Key File.\n");
 		return 2;
 	}
 
 	if (!EVP_PKEY_assign_RSA( pubkey, rsa_pubkey))
 	{
-		fprintf(stderr, "EVP_PKEY_assign_RSA: failed.\n");
+		errorMessage("EVP_PKEY_assign_RSA: failed.\n");
 		return 3;
 	}
 	fclose( fptr );
