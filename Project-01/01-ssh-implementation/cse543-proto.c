@@ -157,6 +157,33 @@ int send_message( int sock, ProtoMessageHdr *hdr, char *block )
 
 /**********************************************************************
 
+    Function    : generate_pseudorandom_bytes
+    Description : Generate pseudirandom bytes using OpenSSL PRNG 
+    Inputs      : buffer - buffer to fill
+                  size - number of bytes to get
+    Outputs     : 0 if successful, -1 if failure
+
+***********************************************************************/
+
+int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
+{
+	if(buffer == NULL || size == 0) {
+		errorMessage("generate_pseudorandom_bytes: Invalid input.\n");
+		return -1;
+	}
+
+	int rand_bytes_status = 1;
+	rand_bytes_status = RAND_bytes(buffer, size);
+
+	if(rand_bytes_status != 1) {
+		errorMessage("generate_pseudorandom_bytes: Error in RAND_bytes.\n");
+		return -1;
+	}
+	return 0;
+}
+
+/**********************************************************************
+
     Function    : encrypt_message
     Description : Get message encrypted (by encrypt) and put ciphertext 
                    and metadata for decryption into buffer
@@ -344,34 +371,6 @@ int extract_public_key( char *buffer, unsigned int size, EVP_PKEY **pubkey )
 
 /**********************************************************************
 
-    Function    : generate_pseudorandom_bytes
-    Description : Generate pseudirandom bytes using OpenSSL PRNG 
-    Inputs      : buffer - buffer to fill
-                  size - number of bytes to get
-    Outputs     : 0 if successful, -1 if failure
-
-***********************************************************************/
-
-int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
-{
-	if(buffer == NULL || size == 0) {
-		errorMessage("generate_pseudorandom_bytes: Invalid input.\n");
-		return -1;
-	}
-
-	int rand_bytes_status = 1;
-	rand_bytes_status = RAND_bytes(buffer, size);
-
-	if(rand_bytes_status != 1) {
-		errorMessage("generate_pseudorandom_bytes: Error in RAND_bytes.\n");
-		return -1;
-	}
-	return 0;
-}
-
-
-/**********************************************************************
-
     Function    : seal_symmetric_key
     Description : Encrypt symmetric key using public key
     Inputs      : key - symmetric key
@@ -472,9 +471,9 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
         return -1;
     }
 
-	unsigned char* ek = buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
-	unsigned char* iv = buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl;
-	unsigned char* ciphertext = buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl;
+	unsigned char* ek = (unsigned char*)buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
+	unsigned char* iv = (unsigned char*)buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl;
+	unsigned char* ciphertext = (unsigned char*)buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl;
 
 	int asymm_decryption_status = 0;
 
@@ -562,6 +561,7 @@ int client_authenticate( int sock, unsigned char **session_key )
 		return -1;
 	}
 
+	// Using seal_symmetric_key since server keys are RSA public keys
 	char encrypted_key_body[MAX_BLOCK_SIZE];
 	int encrypted_key_body_len = 0;
 	encrypted_key_body_len = seal_symmetric_key(key_to_seal, KEYSIZE, server_pubkey, encrypted_key_body);
@@ -713,7 +713,7 @@ int client_secure_transfer( struct rm_cmd *r, char *fname, char *address )
 	/* Connect to the server using the provided address */
 	int sock;
 	unsigned char* session_key = NULL;
-	sock = client_connect(address);
+	sock = connect_client(address);
     if (sock < 0) {
         errorMessage("client_secure_transfer: Connection to server failed.\n");
         return -1;
@@ -978,9 +978,11 @@ int receive_file( int sock, unsigned char *key )
 	/* open file */
 	if ( r->type == TYP_DATA_SHARED ) {
 		unsigned int size = r->len + strlen(FILE_PREFIX) + 1;
-		char *fname = (char *)malloc( size );
+		fname = (char *)malloc( size );
 		snprintf( fname, size, "%s%.*s", FILE_PREFIX, (int) r->len, r->fname );
-		if ( (fh=open( fname, O_WRONLY|O_CREAT|O_TRUNC, 0700)) > 0 );  // TJ: need to change this for students
+                printf("fname: %s", fname);
+		// Ask them about the sign reverse here
+		if ( (fh=open( fname, O_WRONLY|O_CREAT|O_TRUNC, 0700)) < 0 );
 		else assert( 0 );
 	}
 	else assert( 0 );
@@ -1065,14 +1067,14 @@ int server_secure_transfer( char *privfile, char *pubfile )
 	assert( fptr != NULL);
 	if (!(pRSA = PEM_read_RSAPrivateKey( fptr, &rsa_privkey, NULL, NULL)))
 	{
-		errorMessage("Error loading RSA Private Key File.\n");
+		fprintf(stderr, "Error loading RSA Private Key File.\n");
 
 		return 2;
 	}
 
 	if (!EVP_PKEY_assign_RSA(privkey, rsa_privkey))
 	{
-		errorMessage("EVP_PKEY_assign_RSA: failed.\n");
+		fprintf(stderr, "EVP_PKEY_assign_RSA: failed.\n");
 		return 3;
 	}
 	fclose( fptr ); 
@@ -1082,13 +1084,13 @@ int server_secure_transfer( char *privfile, char *pubfile )
 	assert( fptr != NULL);
 	if (!PEM_read_RSAPublicKey( fptr , &rsa_pubkey, NULL, NULL))
 	{
-		errorMessage("Error loading RSA Public Key File.\n");
+		fprintf(stderr, "Error loading RSA Public Key File.\n");
 		return 2;
 	}
 
 	if (!EVP_PKEY_assign_RSA( pubkey, rsa_pubkey))
 	{
-		errorMessage("EVP_PKEY_assign_RSA: failed.\n");
+		fprintf(stderr, "EVP_PKEY_assign_RSA: failed.\n");
 		return 3;
 	}
 	fclose( fptr );
@@ -1136,4 +1138,3 @@ int server_secure_transfer( char *privfile, char *pubfile )
 	/* Return successfully */
 	return( 0 );
 }
-
