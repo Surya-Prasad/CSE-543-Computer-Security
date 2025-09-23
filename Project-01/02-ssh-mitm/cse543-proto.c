@@ -29,6 +29,7 @@
 #include <openssl/err.h>
 #include <openssl/bn.h>
 #include <openssl/rsa.h>
+#include <openssl/rand.h>
 
 /* Project Include Files */
 #include "cse543-util.h"
@@ -155,6 +156,33 @@ int send_message( int sock, ProtoMessageHdr *hdr, char *block )
           return( send_data(sock, (char *)hdr, sizeof(hdr)) ||
                   send_data(sock, block, real_len) );
 }
+/**********************************************************************
+
+    Function    : generate_pseudorandom_bytes
+    Description : Generate pseudirandom bytes using OpenSSL PRNG 
+    Inputs      : buffer - buffer to fill
+                  size - number of bytes to get
+    Outputs     : 0 if successful, -1 if failure
+
+***********************************************************************/
+
+int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
+{
+	//Code from part 1
+	if(buffer == NULL || size == 0) {
+		errorMessage("generate_pseudorandom_bytes: Invalid input.\n");
+		return -1;
+	}
+
+	int rand_bytes_status = 1;
+	rand_bytes_status = RAND_bytes(buffer, size);
+
+	if(rand_bytes_status != 1) {
+		errorMessage("generate_pseudorandom_bytes: Error in RAND_bytes.\n");
+		return -1;
+	}
+    return 0;
+}
 
 /**********************************************************************
 
@@ -171,7 +199,68 @@ int send_message( int sock, ProtoMessageHdr *hdr, char *block )
 /*** YOUR CODE from Part 1 ***/
 int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsigned char *key, 
 		     unsigned char *buffer, unsigned int *len )
-{
+{	/*
+	* Given plaintext, its length plaintext_len and key
+	* Encrypt it using the key and copy the resulting encrypted data into buffer
+	*/
+
+	/*
+	* Encrypted Buffer :- a Tag + an IV + Cipher Text
+	*/
+
+	/*
+	* Take inspiration from Test AES function - We are trying to employ Symmetric Key Cryptography here
+	*/
+
+	int iv_len = 16;
+	int tag_len = TAGSIZE;
+	int ciphertext_len;
+
+	unsigned char* iv = malloc(iv_len);
+	unsigned char* tag = malloc(tag_len);
+	unsigned char* ciphertext = malloc(plaintext_len);
+
+	if (!iv || !tag || !ciphertext) {
+		errorMessage("encrypt_message: Malloc Failure for iv/tag/ciphertext. \n");
+		free(iv);
+		free(tag);
+        free(ciphertext);
+		return -1;
+	}
+
+
+	int err_generate_pseudorandom_bytes = 0;
+	err_generate_pseudorandom_bytes = generate_pseudorandom_bytes(iv, iv_len);
+	if(err_generate_pseudorandom_bytes != 0) { 
+		errorMessage("encrypt_message: generate_pseudorandom_bytes() failed to generate IV. \n");
+		free(iv);
+        free(tag);
+        free(ciphertext);
+        return -1;
+	}
+	
+	// Encryption
+	ciphertext_len = encrypt(plaintext, plaintext_len, (unsigned char *)NULL, 0, key, iv, ciphertext, tag);
+	if(ciphertext_len < 0) {
+		errorMessage("encrypt_message: encrypt() failed. \n");
+		free(iv);
+		free(tag);
+		free(ciphertext);
+
+		return -1;
+	}
+
+	// Copy onto Buffer
+	*len = iv_len + tag_len + ciphertext_len;
+	memcpy(buffer, iv, iv_len);
+	memcpy(buffer + iv_len, tag, tag_len);
+	memcpy(buffer + iv_len + tag_len, ciphertext, ciphertext_len);
+
+	free(iv);
+	free(tag);
+	free(ciphertext);
+
+	return 0;
 }
 
 
@@ -192,6 +281,43 @@ int encrypt_message( unsigned char *plaintext, unsigned int plaintext_len, unsig
 int decrypt_message( unsigned char *buffer, unsigned int len, unsigned char *key, 
 		     unsigned char *plaintext, unsigned int *plaintext_len )
 {
+	/*
+	* Given buffer, its length len and key
+	* Decrypt it using the key and copy the resulting data into plaintext, its length into plaintext_len
+	*/
+
+	/*
+	* Take inspiration from Test AES function - We are trying to employ Symmetric Key Cryptography here
+	*/
+
+	int iv_len = 16;
+	int tag_len = TAGSIZE;
+
+	if (len < iv_len + tag_len) {
+        errorMessage("decrypt_message: Invalid Buffer.\n");
+        return -1;
+    }
+
+	int ciphertext_len = len - tag_len - iv_len;
+
+	// The buffer is designed as IV + Tag + CipherText. 
+	// We will need to seperate the ciphertext from tag and IV
+	// I have taken pointers here to track the ciphertext
+	unsigned char* iv = buffer;
+	unsigned char* tag = buffer + iv_len;
+	unsigned char* ciphertext = buffer + iv_len + tag_len;
+
+
+	int decrypt_status = -1;
+	decrypt_status = decrypt( ciphertext, ciphertext_len, (unsigned char *) NULL, 0, tag, key, iv, plaintext );	
+	if(decrypt_status < 0) {
+		errorMessage("decrypt_message: decrypt() failed. Invalid key/tag. \n");
+		return -1;
+	}
+
+	*plaintext_len = (unsigned int)decrypt_status;
+
+	return 0;
 }
 
 
@@ -246,23 +372,6 @@ int extract_public_key( char *buffer, unsigned int size, EVP_PKEY **pubkey )
 
 /**********************************************************************
 
-    Function    : generate_pseudorandom_bytes
-    Description : Generate pseudirandom bytes using OpenSSL PRNG 
-    Inputs      : buffer - buffer to fill
-                  size - number of bytes to get
-    Outputs     : 0 if successful, -1 if failure
-
-***********************************************************************/
-
-int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
-{
-	//Code from part 1
-    return 0;
-}
-
-
-/**********************************************************************
-
     Function    : seal_symmetric_key
     Description : Encrypt symmetric key using public key
     Inputs      : key - symmetric key
@@ -275,6 +384,48 @@ int generate_pseudorandom_bytes( unsigned char *buffer, unsigned int size)
 /*** YOUR CODE from Part 1 ***/
 int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubkey, char *buffer )
 {
+	/*
+	* Given symmetric key "key", its length keylen and a known public key "pubkey"
+	* Encrypt the key using the RSA pubkey and copy the resulting encrypted data into buffer
+	*/
+
+	/*
+	* The Encrypted Buffer needs the following - Encrypted RSA pubkey, its length, an IV, its length, Ciphertext of Symmetric Key, its length
+	* One Such implementation is :- encypted rsa pubkey length + iv length + ciphertext length + encrypted rsa pubkey + IV + Ciphertext
+	*/
+
+	/*
+	* Take inspiration from Test RSA function - We are trying to employ Asymmetric Key Cryptography here
+	*/
+
+	int ciphertext_len = 0;
+	unsigned char *ciphertext;
+	unsigned char *ek;
+	unsigned int ekl; 
+	unsigned char *iv;
+	unsigned int ivl;
+	unsigned int buffer_len = 0;
+
+	ciphertext_len = rsa_encrypt( key, keylen, &ciphertext, &ek, &ekl, &iv, &ivl, pubkey );
+	if(ciphertext_len < 0) {
+		errorMessage("seal_symmetric_key: rsa_encrypt failed.\n");
+		return -1;
+	}
+
+	memcpy(buffer, &ekl, sizeof(ekl));
+	memcpy(buffer + sizeof(ekl), &ivl, sizeof(ivl));
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl), &ciphertext_len, sizeof(ciphertext_len));
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len), ek, ekl);
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl, iv, ivl);
+	memcpy(buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl, ciphertext, ciphertext_len);
+
+	free(ek);
+	free(iv);
+	free(ciphertext);
+
+	buffer_len = sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl + ciphertext_len;
+
+	return buffer_len;
 }
 
 /**********************************************************************
@@ -291,6 +442,49 @@ int seal_symmetric_key( unsigned char *key, unsigned int keylen, EVP_PKEY *pubke
 /*** YOUR CODE from Part 1 ***/
 int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, unsigned char **key )
 {
+	/*
+	* Given buffer, its length len and a known private key "privkey"
+	* Decrypt it using the private key and copy the resulting data into key
+	*/
+
+	/*
+	* Remember : The buffer could be something like this ("encypted rsa pubkey length + iv length + ciphertext length + encrypted rsa pubkey + IV + Ciphertext")
+	*/
+
+	/*
+	* Take inspiration from Test RSA function - We are trying to employ Asymmetric Key Cryptography here
+	*/
+
+	unsigned int ekl, ivl, ciphertext_len;
+
+	unsigned int header_len = sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
+    if (len < header_len) {
+        errorMessage("unseal_symmetric_key: Buffer is too small to be valid.\n");
+        return -1;
+    }
+
+	memcpy(&ekl, buffer, sizeof(ekl));
+	memcpy(&ivl, buffer + sizeof(ekl), sizeof(ivl));
+	memcpy(&ciphertext_len, buffer + sizeof(ekl) + sizeof(ivl), sizeof(ciphertext_len));
+
+	if (header_len + ekl + ivl + ciphertext_len != len) {
+        errorMessage("unseal_symmetric_key: Buffer corruption or invalid length fields.\n");
+        return -1;
+    }
+
+	    unsigned char* ek = (unsigned char*)buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len);
+    unsigned char* iv = (unsigned char*)buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl;
+    unsigned char* ciphertext = (unsigned char*)buffer + sizeof(ekl) + sizeof(ivl) + sizeof(ciphertext_len) + ekl + ivl;
+
+	int asymm_decryption_status = 0;
+
+ 	asymm_decryption_status = rsa_decrypt(ciphertext, ciphertext_len, ek, ekl, iv, ivl, key, privkey);
+    if (asymm_decryption_status < 0) {
+        errorMessage("unseal_symmetric_key: rsa_decrypt failed.\n");
+        return -1;
+    }
+
+	return 0;
 }
 
 
@@ -314,6 +508,107 @@ int unseal_symmetric_key( char *buffer, unsigned int len, EVP_PKEY *privkey, uns
 /*** YOUR CODE from Part 1 ***/
 int client_authenticate( int sock, unsigned char **session_key )
 {
+	/*
+	* Send Message to server with header CLIENT_INIT_EXCHANGE
+	*/
+
+	ProtoMessageHdr header;
+	header.msgtype = CLIENT_INIT_EXCHANGE;
+	header.length = 0;
+
+	int client_send_status = 0;
+	client_send_status = send_message(sock, &header, NULL);
+	if(client_send_status != 0) {
+		errorMessage("client_authenticate: Client message send failed for CLIENT_INIT_EXCHANGE.\n");
+		return -1;
+	}
+
+	/*
+	* Wait for Message from server with header SERVER_INIT_RESPONSE
+	* Extract Pub Key out of the message -> Create a new Symmetric Key -> Encrypt it using the Pub Key of server
+	*/
+
+	char server_message_buffer[MAX_BLOCK_SIZE];
+	int server_wait_msg_status = 0;
+	server_wait_msg_status = wait_message(sock, &header, server_message_buffer, SERVER_INIT_RESPONSE);
+	if(server_wait_msg_status < 0) {
+		errorMessage("client_authenticate: Server message wait failed for SERVER_INIT_RESPONSE.\n");
+		return -1;
+	}
+
+	unsigned char *key_to_seal = NULL;
+	key_to_seal = (unsigned char *) malloc (KEYSIZE);
+	if(key_to_seal == NULL) {
+		errorMessage("client_authenticate: Malloc failure for symmetric key");
+		free(key_to_seal);
+		return -1;
+	}
+
+	int generate_session_key_status = 0;
+	generate_session_key_status = generate_pseudorandom_bytes(key_to_seal, KEYSIZE);
+	if (generate_session_key_status != 0) {
+        errorMessage("client_authenticate: Failed to generate session key\n");
+		free(key_to_seal);
+		return -1;
+    }
+
+	EVP_PKEY *server_pubkey = EVP_PKEY_new();
+	int extract_public_key_status = 0;
+	extract_public_key_status = extract_public_key(server_message_buffer, header.length, &server_pubkey);
+	if(extract_public_key_status != 0) {
+		errorMessage("client_authenticate: Failed to extract server public key\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+	}
+
+	char encrypted_key_body[MAX_BLOCK_SIZE];
+	int encrypted_key_body_len = 0;
+	encrypted_key_body_len = seal_symmetric_key(key_to_seal, KEYSIZE, server_pubkey, encrypted_key_body);
+    if (encrypted_key_body_len < 0) {
+        errorMessage("client_authenticate: Failed to seal symmetric key\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+    }
+
+	/*
+	* Send message to server with header CLIENT_INIT_ACK
+	* The encrypted symmetric key from previous phase should be sent here
+	*/
+
+	header.msgtype = CLIENT_INIT_ACK;
+	header.length = encrypted_key_body_len;
+	int client_ack_send_status = 0;
+	client_ack_send_status = send_message(sock, &header, encrypted_key_body);
+	if(client_ack_send_status != 0) {
+		errorMessage("client_authenticate: Client message send failed for CLIENT_INIT_ACK\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+	}
+
+	/*
+	* Wait message from server with header SERVER_INIT_ACK
+	* Decrypt the message using the symmetric key and make sure the code doesn't break. 
+	* This would mean both Client and Server have the same symmetric key now and the SSH connection is successful
+	*/
+
+	int server_ack_status = 0;
+	server_ack_status = wait_message(sock, &header, NULL, SERVER_INIT_ACK);
+	if(server_ack_status < 0) {
+		errorMessage("client_authenticate: Server response invalid for SERVER_INIT_ACK.\n");
+		free(key_to_seal);
+		EVP_PKEY_free(server_pubkey);
+		return -1;
+	}
+	EVP_PKEY_free(server_pubkey);
+
+	/*
+	* Store the Symmetric key in session_key for later use. 
+	*/
+	*session_key = key_to_seal;
+	return 0;
 }
 
 /**********************************************************************
@@ -411,9 +706,45 @@ int transfer_file( struct rm_cmd *r, char *fname, int sock,
 /*** YOUR CODE from Part 1 */
 int client_secure_transfer( struct rm_cmd *r, char *fname, char *address ) 
 {
-	
-}
+	/*
+		Executes a secure client-side file transfer by connecting to the server, authenticating, and sending the file using symmetric key encryption.
+	*/
 
+	/* Connect to the server using the provided address */
+	int sock;
+	unsigned char* session_key = NULL;
+	sock = connect_client(address);
+    if (sock < 0) {
+        errorMessage("client_secure_transfer: Connection to server failed.\n");
+        return -1;
+    }
+
+    /* Perform client authentication and establish a session key */
+	int client_authenticate_status = 0;
+	client_authenticate_status = client_authenticate(sock, &session_key);
+	if(client_authenticate_status != 0) {
+		errorMessage("client_secure_transfer: Client authentication failed.\n");
+		close(sock);
+		return -1;
+	}
+
+    /* Transfer the file securely using the established symmetric key */
+	int transfer_file_status = 0;
+	transfer_file_status = transfer_file(r, fname, sock, session_key);
+	if(transfer_file_status != 0) {
+		errorMessage("client_secure_transfer: File transfer failed.\n");
+		free(session_key);
+		close(sock);
+		return -1;
+	}
+
+    /* Close the connection */
+	close(sock);
+	free(session_key);
+
+    /* Return status (0 on success, -1 on failure) */
+	return 0;
+}
 
 /* 
 
@@ -475,7 +806,7 @@ int test_aes( )
 	unsigned char *iv = (unsigned char *)"0123456789012345";
 	int clen = 0, plen = 0;
 	unsigned char msg[] = "Help me, Mr. Wizard!";
-	unsigned int len = strlen((char*) msg);
+	unsigned int len = strlen((char *)msg);
 
 	printf("*** Test AES encrypt and decrypt. ***\n");
 
@@ -517,9 +848,6 @@ int test_aes( )
 }
 
 
-/***********************************************************************/
-
-
 /**********************************************************************
 
     Function    : server_protocol
@@ -532,9 +860,81 @@ int test_aes( )
 /*** YOUR CODE from Part 1 */
 int server_protocol( int sock, char *pubfile, EVP_PKEY *privkey, unsigned char **enckey )
 {
-	/*
-	* Couterparts of client actions that the server needs to take.
-	*/
+ /*
+    * Counterparts of client actions that the server needs to take.
+    */
+
+    // Server waiting for Client Init
+    char message_buffer[MAX_BLOCK_SIZE];
+    ProtoMessageHdr header;
+    int client_wait_status = 0;
+    client_wait_status = wait_message(sock, &header, message_buffer, CLIENT_INIT_EXCHANGE);
+    if(client_wait_status < 0) {
+        errorMessage("server_protocol: Client message wait failed for CLIENT_INIT_EXCHANGE.\n");
+        return -1;
+    }
+
+    // Copying Server's Public key to the buffer
+	// I have referred to extract_public_key for this
+    FILE *fptr;
+    fptr = fopen(pubfile, "r");
+    if(fptr == NULL) {
+        errorMessage("server_protocol: Cannot open public key.\n");
+        return -1;
+    }
+    fseek(fptr, 0, SEEK_END);
+    long pubkey_len;
+    pubkey_len = ftell(fptr);
+    rewind(fptr);
+    if (pubkey_len >= MAX_BLOCK_SIZE) {
+        errorMessage("server_protocol: Public key is too large.\n");
+        fclose(fptr);
+        return -1;
+    }
+    fread(message_buffer, pubkey_len, 1, fptr);
+    fclose(fptr);
+
+    // Sending Server Public key
+    header.msgtype = SERVER_INIT_RESPONSE;
+    header.length = pubkey_len;
+    int server_send_init_status = 0;
+    server_send_init_status = send_message(sock, &header, message_buffer);
+    if(server_send_init_status != 0) {
+        errorMessage("server_protocol: Server message send failed for SERVER_INIT_RESPONSE.\n");
+        return -1;
+    }
+
+    // Waiting for Client's Session Key
+    int server_wait_sessionkey_status = 0;
+    server_wait_sessionkey_status = wait_message(sock, &header, message_buffer, CLIENT_INIT_ACK);
+    if(server_wait_sessionkey_status < 0) {
+        errorMessage("server_protocol: Client message wait failed for CLIENT_INIT_ACK.\n");
+        return -1;
+    }
+
+    // Decrypting Client's key
+    int session_key_decrypt_status = 0;
+    session_key_decrypt_status = unseal_symmetric_key(message_buffer, header.length, privkey, enckey);
+    if (session_key_decrypt_status != 0) {
+        errorMessage("server_protocol: Session Key decryption failed.\n");
+        return -1;
+    }
+
+    // Send ACK to client
+    header.msgtype = SERVER_INIT_ACK;
+    header.length = 0;
+    int server_send_ack_status = 0;
+    server_send_ack_status = send_message(sock, &header, NULL);
+    if(server_send_ack_status != 0) {
+        errorMessage("server_protocol: Server message send failed for SERVER_INIT_ACK.\n");
+        if (*enckey != NULL) {
+            free(*enckey);
+            *enckey = NULL;
+        }
+        return -1;
+    }
+
+    return 0;
 }
 
 
@@ -550,7 +950,9 @@ int server_protocol( int sock, char *pubfile, EVP_PKEY *privkey, unsigned char *
 
 #define FILE_PREFIX "./shared/"
 
-int receive_file( int sock, unsigned char *key ) 
+// Arguments for MITM Server: cse543-p2-server <private_key_file> <public_key_file> <IP-address-of-machine-2> 1
+// cmd_mitm_option for the 1 option, 
+int receive_file( int sock, unsigned char *key, char **filepath_out, struct rm_cmd **cmd_mitm_option )
 {
 	/* Local variables */
 	unsigned long totalBytes = 0;
@@ -583,6 +985,7 @@ int receive_file( int sock, unsigned char *key )
 		fname = (char *)malloc( size );
 		snprintf( fname, size, "%s%.*s", FILE_PREFIX, (int) r->len, r->fname );
                 printf("fname: %s", fname);
+
 		if ( (fh=open( fname, O_WRONLY|O_CREAT|O_TRUNC, 0700)) > 0 );
 		else assert( 0 );
 	}
@@ -620,10 +1023,30 @@ int receive_file( int sock, unsigned char *key )
 		printf( "Total bytes [%ld].\n", totalBytes );
 		/* Clean up the file, return successfully */
 		close( fh );
+
+		// Arguments for MITM Server: cse543-p2-server <private_key_file> <public_key_file> <IP-address-of-machine-2> 1
+		// We need the file path to write "YOUR TRANSFER IS UNDER RISK" to the file
+        if (filepath_out != NULL) {
+			*filepath_out = fname;
+		}
+        else {
+			free(fname);
+		}
+
+		// Adding the cmd_mitm_option to check MITM Server functionality
+		// This will be set as a parameter so we can use client_secure_transfer in server_secure_transfer
+        if (cmd_mitm_option != NULL) {
+			*cmd_mitm_option = r;
+		}
+        else {
+			free(r);
+		}
 	}
 	else {
 		printf( "Server: illegal command %d\n", r->cmd );
-		//	     exit( -1 );
+		free(fname);
+        free(r);
+		// exit( -1 );
 	}
 
 	/* Server ack */
@@ -655,7 +1078,6 @@ int server_secure_transfer( char *privfile, char *pubfile, char *real_address )
 	FILE *fptr;
 	// new args
 	struct rm_cmd *r = NULL;
-	int err;
 
 	/* initialize */
 	OpenSSL_add_all_algorithms();
@@ -722,21 +1144,54 @@ int server_secure_transfer( char *privfile, char *pubfile, char *real_address )
 			/* Accept the connect, receive the file, and return */
 			if ( (newsock = server_accept(server)) != -1 )
 			{
-				/* Do the protocol, receive file, shutdown */
-				server_protocol( newsock, pubfile, privkey, &key );
-				receive_file( newsock, key );
-				close( newsock );
 				/*** Start: YOUR CODE - for server spoofing ***/
-				//
-				//
-				//
-				//
-				//
-				//
-				//
-				//
-				//
-				/*** End: YOUR CODE - for server spoofing ***/        
+
+				// Vanilla Server is present on Machine 1
+				// Vanilla Client and MITM Server are present on Machine 2
+
+				// Vanilla Client to MITM Server
+				int vclient_to_mitmserver_status = 0;
+				vclient_to_mitmserver_status = server_protocol(newsock, pubfile, privkey, &key);
+				if(vclient_to_mitmserver_status < 0) {
+					errorMessage("MITM | server-secure-transfer: Cannot connect to Client. \n");
+					return -1;
+				}
+
+				// Receive File from Vanilla Client
+				char *vanilla_fname = NULL;
+				int receive_file_status = 0;
+				receive_file_status = receive_file(newsock, key, &vanilla_fname, &r);
+				if(receive_file_status < 0) {
+					errorMessage("MITM | server-secure-transfer: Error in receiving file. \n");
+				}
+				// We close the connection since we are appending the text to the server. 
+				// I assume that the complete file is present.
+				close(newsock); 
+
+				// Modify file to append to the received file
+				FILE *fp = fopen(vanilla_fname, "a");
+				if (fp != NULL) {
+					fputs("\nYOUR TRANSFER IS UNDER RISK\n", fp);
+					fclose(fp);
+				} else {
+					errorMessage("MITM | server-secure-transfer: Cannot Modify received file.\n");
+					return -1;
+				}
+
+				// Transfer modified file from MITM Server to Vanilla Server
+				int mitmserver_to_vserver_status = 0;
+				mitmserver_to_vserver_status = client_secure_transfer(r, vanilla_fname, real_address);
+				if(mitmserver_to_vserver_status < 0)
+				{
+					errorMessage("MITM | server-secure-transfer: MITM server cannot transfer the modified file to the Vanilla Server.\n");
+					return -1;
+				}
+				
+				free(key);
+				free(vanilla_fname);
+				free(r);
+
+				/*** End: YOUR CODE - for server spoofing ***/
 			}
 			else
 			{
