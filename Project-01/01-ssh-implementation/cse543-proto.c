@@ -150,9 +150,9 @@ int send_message( int sock, ProtoMessageHdr *hdr, char *block )
      hdr->msgtype = htons( hdr->msgtype );
      hdr->length = htons( hdr->length );
      if ( block == NULL )
-          return( send_data( sock, (char *)hdr, sizeof(ProtoMessageHdr) ) ); // FIX: Was sizeof(hdr) which is incorrect for a pointer
+          return( send_data( sock, (char *)hdr, sizeof(hdr) ) );
      else 
-          return( send_data(sock, (char *)hdr, sizeof(ProtoMessageHdr)) || // FIX: Was sizeof(hdr)
+          return( send_data(sock, (char *)hdr, sizeof(hdr)) ||
                   send_data(sock, block, real_len) );
 }
 
@@ -554,7 +554,7 @@ int client_authenticate( int sock, unsigned char **session_key )
         return -1;
     }
 
-    EVP_PKEY *server_pubkey = NULL;
+    EVP_PKEY *server_pubkey = EVP_PKEY_new();
     int extract_public_key_status = 0;
     extract_public_key_status = extract_public_key(server_message_buffer, header.length, &server_pubkey);
     if(extract_public_key_status != 0) {
